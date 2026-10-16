@@ -1,0 +1,16 @@
+# Binaries / executables
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+bin/
+
+# Environment files
+.env
+*.env
+
+# VS Code / OS files
+.vscode/
+Thumbs.db
+.DS_Store
