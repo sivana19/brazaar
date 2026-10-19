@@ -14,11 +14,9 @@ import (
 )
 
 func main() {
-	// Configure JSON structured logging
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	// Read from environment; fall back to local default if unset
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
 		connStr = "postgresql://neondb_owner:npg_zX7fAWDKIR4t@ep-lingering-sky-b4fp5o62-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require"
@@ -31,7 +29,6 @@ func main() {
 	}
 	defer dbPool.Close()
 
-	// Initialize repositories
 	productRepo := product.NewRepository(dbPool)
 
 	router := gin.Default()
@@ -91,6 +88,29 @@ func main() {
 		}
 
 		c.JSON(http.StatusOK, p)
+	})
+
+	// POST /products - Create a new product item
+	router.POST("/products", func(c *gin.Context) {
+		var input product.CreateProductInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "invalid request payload",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		newProduct, err := productRepo.Create(c.Request.Context(), input)
+		if err != nil {
+			slog.Error("failed to create product", "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "failed to create product",
+			})
+			return
+		}
+
+		c.JSON(http.StatusCreated, newProduct)
 	})
 
 	slog.Info("server starting on :8080")
