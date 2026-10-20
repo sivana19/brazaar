@@ -10,7 +10,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Product represents an item stored in PostgreSQL.
+// Product represents a catalog item stored in PostgreSQL.
 type Product struct {
 	ID          int       `json:"id"`
 	Name        string    `json:"name"`
@@ -20,7 +20,7 @@ type Product struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
-// CreateProductInput defines the expected JSON payload when creating a product.
+// CreateProductInput defines the validation payload for creating a new product.
 type CreateProductInput struct {
 	Name        string `json:"name" binding:"required,min=2,max=255"`
 	Description string `json:"description"`
@@ -28,7 +28,15 @@ type CreateProductInput struct {
 	Stock       int    `json:"stock" binding:"gte=0"`
 }
 
-// Repository encapsulates database queries for products.
+// UpdateProductInput defines the fields allowed during a full product update.
+type UpdateProductInput struct {
+	Name        string `json:"name" binding:"required,min=2,max=255"`
+	Description string `json:"description"`
+	PriceCents  int    `json:"price_cents" binding:"required,gte=0"`
+	Stock       int    `json:"stock" binding:"gte=0"`
+}
+
+// Repository encapsulates all database operations for products.
 type Repository struct {
 	db *pgxpool.Pool
 }
@@ -104,7 +112,7 @@ func (r *Repository) GetByID(ctx context.Context, id int) (*Product, error) {
 	return &p, nil
 }
 
-// Create inserts a new product and returns the created record.
+// Create inserts a new product and returns the complete created record.
 func (r *Repository) Create(ctx context.Context, input CreateProductInput) (*Product, error) {
 	query := `
 		INSERT INTO products (name, description, price_cents, stock)
@@ -128,10 +136,58 @@ func (r *Repository) Create(ctx context.Context, input CreateProductInput) (*Pro
 		&p.Stock,
 		&p.CreatedAt,
 	)
-
 	if err != nil {
 		return nil, fmt.Errorf("create product: %w", err)
 	}
 
 	return &p, nil
+}
+
+// Update modifies an existing product by ID. Returns (nil, nil) if not found.
+func (r *Repository) Update(ctx context.Context, id int, input UpdateProductInput) (*Product, error) {
+	query := `
+		UPDATE products
+		SET name = $1, description = $2, price_cents = $3, stock = $4
+		WHERE id = $5
+		RETURNING id, name, description, price_cents, stock, created_at;
+	`
+
+	var p Product
+	err := r.db.QueryRow(
+		ctx,
+		query,
+		input.Name,
+		input.Description,
+		input.PriceCents,
+		input.Stock,
+		id,
+	).Scan(
+		&p.ID,
+		&p.Name,
+		&p.Description,
+		&p.PriceCents,
+		&p.Stock,
+		&p.CreatedAt,
+	)
+
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("update product: %w", err)
+	}
+
+	return &p, nil
+}
+
+// Delete removes a product record by ID. Returns false if the record was not found.
+func (r *Repository) Delete(ctx context.Context, id int) (bool, error) {
+	query := `DELETE FROM products WHERE id = $1;`
+
+	cmdTag, err := r.db.Exec(ctx, query, id)
+	if err != nil {
+		return false, fmt.Errorf("delete product: %w", err)
+	}
+
+	return cmdTag.RowsAffected() > 0, nil
 }
