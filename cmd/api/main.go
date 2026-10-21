@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
+	"syscall"
+	"time"
 
 	"bazaar/internal/database"
+	"bazaar/internal/order"
 	"bazaar/internal/product"
 
 	"github.com/gin-gonic/gin"
@@ -46,6 +51,7 @@ func main() {
 
 	// Initialize repositories
 	productRepo := product.NewRepository(dbPool)
+	orderRepo := order.NewRepository(dbPool)
 
 	router := gin.Default()
 
@@ -198,8 +204,93 @@ func main() {
 		c.Status(http.StatusNoContent)
 	})
 
-	slog.Info(fmt.Sprintf("server starting on :%s", port))
-	if err := router.Run(":" + port); err != nil {
-		slog.Error("server failed to start", "error", err)
+	// POST /orders - Atomic checkout and inventory deduction
+	router.POST("/orders", func(c *gin.Context) {
+		var input order.CreateOrderInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "invalid order request",
+				"details": err.Error(),
+			})
+			return
+		}
+
+		newOrder, err := orderRepo.CreateOrder(c.Request.Context(), input)
+		if err != nil {
+			switch {
+			case errors.Is(err, order.ErrInsufficientStock):
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			case errors.Is(err, order.ErrProductNotFound):
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+			case errors.Is(err, order.ErrEmptyOrder):
+				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			default:
+				slog.Error("order creation failed", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to complete order"})
+			}
+			return
+		}
+
+		c.JSON(http.StatusCreated, newOrder)
+	})
+
+	// GET /orders/:id - Lookup order by ID with line items
+	router.GET("/orders/:id", func(c *gin.Context) {
+		idParam := c.Param("id")
+		id, err := strconv.Atoi(idParam)
+		if err != nil || id <= 0 {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": "invalid order id, must be a positive integer",
+			})
+			return
+		}
+
+		o, err := orderRepo.GetByID(c.Request.Context(), id)
+		if err != nil {
+			slog.Error("failed to fetch order", "id", id, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"error": "failed to fetch order",
+			})
+			return
+		}
+
+		if o == nil {
+			c.JSON(http.StatusNotFound, gin.H{
+				"error": "order not found",
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, o)
+	})
+
+	// Configure server with graceful shutdown
+	srv := &http.Server{
+		Addr:    ":" + port,
+		Handler: router,
 	}
+
+	go func() {
+		slog.Info(fmt.Sprintf("server starting on :%s", port))
+		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("server startup failed", "error", err)
+			os.Exit(1)
+		}
+	}()
+
+	// Wait for termination signal
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	slog.Info("shutting down server gracefully...")
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		slog.Error("server forced to shutdown", "error", err)
+	}
+
+	slog.Info("server exited cleanly")
 }
