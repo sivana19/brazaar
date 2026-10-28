@@ -1,0 +1,15 @@
+basePath: /
+host: localhost:8000
+info:
+  contact: {}
+  description: Production-grade e-commerce backend built with Go, Gin, and Neon PostgreSQL.
+  title: Bazaar E-Commerce REST API
+  version: "1.0"
+paths: {}
+securityDefinitions:
+  BearerAuth:
+    description: Type "Bearer " followed by your JWT token.
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

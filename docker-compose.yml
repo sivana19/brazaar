@@ -1,15 +1,11 @@
 services:
-  postgres:
-    image: postgres:16-alpine
-    container_name: bazaar_db
-    environment:
-      POSTGRES_USER: root
-      POSTGRES_PASSWORD: secretpassword
-      POSTGRES_DB: bazaar
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: bazaar_api
     ports:
-      - "5432:5432"
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-
-volumes:
-  pgdata:
+      - "8080:8080"
+    env_file:
+      - .env
+    restart: unless-stopped

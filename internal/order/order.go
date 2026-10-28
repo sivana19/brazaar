@@ -6,40 +6,30 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 var (
-	ErrProductNotFound   = errors.New("product not found")
-	ErrInsufficientStock = errors.New("insufficient stock for requested product")
-	ErrEmptyOrder        = errors.New("order must contain at least one item")
+	ErrInsufficientStock = errors.New("insufficient stock for requested item")
+	ErrOrderNotFound     = errors.New("order not found")
 )
 
-type OrderItemInput struct {
-	ProductID int `json:"product_id" binding:"required,gt=0"`
-	Quantity  int `json:"quantity" binding:"required,gt=0"`
-}
-
-type CreateOrderInput struct {
-	CustomerEmail string           `json:"customer_email" binding:"required,email"`
-	Items         []OrderItemInput `json:"items" binding:"required,dive"`
-}
-
 type OrderItem struct {
-	ID             int `json:"id"`
-	ProductID      int `json:"product_id"`
-	Quantity       int `json:"quantity"`
-	UnitPriceCents int `json:"unit_price_cents"`
+	ProductID  int `json:"product_id" binding:"required" example:"1"`
+	Quantity   int `json:"quantity" binding:"required,gt=0" example:"2"`
+	PriceCents int `json:"price_cents" example:"19900"`
 }
 
 type Order struct {
-	ID            int         `json:"id"`
-	CustomerEmail string      `json:"customer_email"`
-	TotalCents    int         `json:"total_cents"`
-	Status        string      `json:"status"`
-	CreatedAt     time.Time   `json:"created_at"`
-	Items         []OrderItem `json:"items"`
+	ID         int         `json:"id" example:"101"`
+	TotalCents int         `json:"total_cents" example:"39800"`
+	Status     string      `json:"status" example:"completed"`
+	CreatedAt  time.Time   `json:"created_at" example:"2026-10-28T12:00:00Z"`
+	Items      []OrderItem `json:"items"`
+}
+
+type CreateOrderInput struct {
+	Items []OrderItem `json:"items" binding:"required,dive"`
 }
 
 type Repository struct {
@@ -50,156 +40,100 @@ func NewRepository(db *pgxpool.Pool) *Repository {
 	return &Repository{db: db}
 }
 
-// CreateOrder executes an atomic transaction with row-level locking (FOR UPDATE)
 func (r *Repository) CreateOrder(ctx context.Context, input CreateOrderInput) (*Order, error) {
-	if len(input.Items) == 0 {
-		return nil, ErrEmptyOrder
-	}
-
-	tx, err := r.db.BeginTx(ctx, pgx.TxOptions{})
+	tx, err := r.db.Begin(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("begin transaction: %w", err)
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	var totalCents int
-	orderItems := make([]OrderItem, 0, len(input.Items))
+	totalCents := 0
+	finalItems := make([]OrderItem, len(input.Items))
 
-	for _, item := range input.Items {
+	for i, item := range input.Items {
 		var currentStock int
-		var unitPriceCents int
+		var priceCents int
 
-		queryLock := `
-			SELECT stock, price_cents 
-			FROM products 
-			WHERE id = $1 
-			FOR UPDATE;
-		`
-		err := tx.QueryRow(ctx, queryLock, item.ProductID).Scan(&currentStock, &unitPriceCents)
-		if err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return nil, fmt.Errorf("%w: ID %d", ErrProductNotFound, item.ProductID)
-			}
-			return nil, fmt.Errorf("lock product row: %w", err)
+		// Lock row for update to prevent concurrent race conditions
+		query := `SELECT stock, price_cents FROM products WHERE id = $1 FOR UPDATE;`
+		if err := tx.QueryRow(ctx, query, item.ProductID).Scan(&currentStock, &priceCents); err != nil {
+			return nil, fmt.Errorf("product %d not found: %w", item.ProductID, err)
 		}
 
 		if currentStock < item.Quantity {
-			return nil, fmt.Errorf("%w: product ID %d has %d in stock, requested %d",
+			return nil, fmt.Errorf("%w: product %d has %d available, requested %d",
 				ErrInsufficientStock, item.ProductID, currentStock, item.Quantity)
 		}
 
-		queryUpdateStock := `
-			UPDATE products 
-			SET stock = stock - $1 
-			WHERE id = $2;
-		`
-		if _, err := tx.Exec(ctx, queryUpdateStock, item.Quantity, item.ProductID); err != nil {
-			return nil, fmt.Errorf("deduct stock: %w", err)
+		updateStockQuery := `UPDATE products SET stock = stock - $1 WHERE id = $2;`
+		if _, err := tx.Exec(ctx, updateStockQuery, item.Quantity, item.ProductID); err != nil {
+			return nil, fmt.Errorf("failed to deduct inventory: %w", err)
 		}
 
-		itemTotal := unitPriceCents * item.Quantity
-		totalCents += itemTotal
-
-		orderItems = append(orderItems, OrderItem{
-			ProductID:      item.ProductID,
-			Quantity:       item.Quantity,
-			UnitPriceCents: unitPriceCents,
-		})
+		finalItems[i] = OrderItem{
+			ProductID:  item.ProductID,
+			Quantity:   item.Quantity,
+			PriceCents: priceCents,
+		}
+		totalCents += priceCents * item.Quantity
 	}
 
-	var createdOrder Order
-	queryOrder := `
-		INSERT INTO orders (customer_email, total_cents, status) 
-		VALUES ($1, $2, 'completed') 
-		RETURNING id, customer_email, total_cents, status, created_at;
+	var orderID int
+	var createdAt time.Time
+	insertOrderQuery := `
+		INSERT INTO orders (total_cents, status) 
+		VALUES ($1, 'completed') 
+		RETURNING id, created_at;
 	`
-	err = tx.QueryRow(ctx, queryOrder, input.CustomerEmail, totalCents).Scan(
-		&createdOrder.ID,
-		&createdOrder.CustomerEmail,
-		&createdOrder.TotalCents,
-		&createdOrder.Status,
-		&createdOrder.CreatedAt,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("insert order: %w", err)
+	if err := tx.QueryRow(ctx, insertOrderQuery, totalCents).Scan(&orderID, &createdAt); err != nil {
+		return nil, fmt.Errorf("failed to record order: %w", err)
 	}
 
-	for i := range orderItems {
-		queryItem := `
-			INSERT INTO order_items (order_id, product_id, quantity, unit_price_cents) 
-			VALUES ($1, $2, $3, $4) 
-			RETURNING id;
+	for _, item := range finalItems {
+		insertItemQuery := `
+			INSERT INTO order_items (order_id, product_id, quantity, price_cents)
+			VALUES ($1, $2, $3, $4);
 		`
-		err := tx.QueryRow(
-			ctx,
-			queryItem,
-			createdOrder.ID,
-			orderItems[i].ProductID,
-			orderItems[i].Quantity,
-			orderItems[i].UnitPriceCents,
-		).Scan(&orderItems[i].ID)
-
-		if err != nil {
-			return nil, fmt.Errorf("insert order item: %w", err)
+		if _, err := tx.Exec(ctx, insertItemQuery, orderID, item.ProductID, item.Quantity, item.PriceCents); err != nil {
+			return nil, fmt.Errorf("failed to insert order items: %w", err)
 		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("commit order transaction: %w", err)
+		return nil, fmt.Errorf("failed to commit order transaction: %w", err)
 	}
 
-	createdOrder.Items = orderItems
-	return &createdOrder, nil
+	return &Order{
+		ID:         orderID,
+		TotalCents: totalCents,
+		Status:     "completed",
+		CreatedAt:  createdAt,
+		Items:      finalItems,
+	}, nil
 }
 
-// GetByID retrieves an order and its associated line items by order ID.
 func (r *Repository) GetByID(ctx context.Context, id int) (*Order, error) {
-	queryOrder := `
-		SELECT id, customer_email, total_cents, status, created_at
-		FROM orders
-		WHERE id = $1;
-	`
-
-	var o Order
-	err := r.db.QueryRow(ctx, queryOrder, id).Scan(
-		&o.ID,
-		&o.CustomerEmail,
-		&o.TotalCents,
-		&o.Status,
-		&o.CreatedAt,
-	)
+	orderQuery := `SELECT id, total_cents, status, created_at FROM orders WHERE id = $1;`
+	var ord Order
+	err := r.db.QueryRow(ctx, orderQuery, id).Scan(&ord.ID, &ord.TotalCents, &ord.Status, &ord.CreatedAt)
 	if err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("query order: %w", err)
+		return nil, ErrOrderNotFound
 	}
 
-	queryItems := `
-		SELECT id, product_id, quantity, unit_price_cents
-		FROM order_items
-		WHERE order_id = $1
-		ORDER BY id ASC;
-	`
-
-	rows, err := r.db.Query(ctx, queryItems, id)
+	itemsQuery := `SELECT product_id, quantity, price_cents FROM order_items WHERE order_id = $1;`
+	rows, err := r.db.Query(ctx, itemsQuery, id)
 	if err != nil {
-		return nil, fmt.Errorf("query order items: %w", err)
+		return nil, fmt.Errorf("failed to query order items: %w", err)
 	}
 	defer rows.Close()
 
-	o.Items = make([]OrderItem, 0)
 	for rows.Next() {
 		var item OrderItem
-		if err := rows.Scan(&item.ID, &item.ProductID, &item.Quantity, &item.UnitPriceCents); err != nil {
-			return nil, fmt.Errorf("scan order item: %w", err)
+		if err := rows.Scan(&item.ProductID, &item.Quantity, &item.PriceCents); err != nil {
+			return nil, fmt.Errorf("failed to scan item: %w", err)
 		}
-		o.Items = append(o.Items, item)
+		ord.Items = append(ord.Items, item)
 	}
 
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("order items rows iteration: %w", err)
-	}
-
-	return &o, nil
+	return &ord, nil
 }
