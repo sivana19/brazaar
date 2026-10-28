@@ -1,11 +1,533 @@
 basePath: /
-host: localhost:8000
+definitions:
+  order.CreateOrderInput:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/order.OrderItem'
+        type: array
+    required:
+    - items
+    type: object
+  order.Order:
+    properties:
+      created_at:
+        example: "2026-10-28T12:00:00Z"
+        type: string
+      id:
+        example: 101
+        type: integer
+      items:
+        items:
+          $ref: '#/definitions/order.OrderItem'
+        type: array
+      status:
+        example: completed
+        type: string
+      total_cents:
+        example: 39800
+        type: integer
+    type: object
+  order.OrderItem:
+    properties:
+      price_cents:
+        example: 19900
+        type: integer
+      product_id:
+        example: 1
+        type: integer
+      quantity:
+        example: 2
+        type: integer
+    required:
+    - product_id
+    - quantity
+    type: object
+  product.CreateProductInput:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      price_cents:
+        type: integer
+      stock:
+        type: integer
+    required:
+    - name
+    - price_cents
+    type: object
+  product.PaginatedProductsResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/product.Product'
+        type: array
+      limit:
+        type: integer
+      offset:
+        type: integer
+      total_count:
+        type: integer
+    type: object
+  product.Product:
+    properties:
+      created_at:
+        type: string
+      description:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      price_cents:
+        type: integer
+      stock:
+        type: integer
+      updated_at:
+        type: string
+    type: object
+  product.UpdateProductInput:
+    properties:
+      description:
+        type: string
+      name:
+        type: string
+      price_cents:
+        type: integer
+      stock:
+        type: integer
+    type: object
+  user.LoginInput:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      password:
+        example: supersecretpassword
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  user.RegisterInput:
+    properties:
+      email:
+        example: user@example.com
+        type: string
+      password:
+        example: supersecretpassword
+        minLength: 8
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  user.User:
+    properties:
+      created_at:
+        example: "2026-10-28T12:00:00Z"
+        type: string
+      email:
+        example: customer@bazaar.com
+        type: string
+      id:
+        example: 1
+        type: integer
+      role:
+        example: customer
+        type: string
+    type: object
+host: localhost:8080
 info:
   contact: {}
   description: Production-grade e-commerce backend built with Go, Gin, and Neon PostgreSQL.
   title: Bazaar E-Commerce REST API
   version: "1.0"
-paths: {}
+paths:
+  /auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate user credentials and receive a JWT token
+      parameters:
+      - description: Login Credentials
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/user.LoginInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Login User
+      tags:
+      - Auth
+  /auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Register a new customer account
+      parameters:
+      - description: Registration Payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/user.RegisterInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/user.User'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Register User
+      tags:
+      - Auth
+  /health:
+    get:
+      description: Verifies API and database connectivity
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "503":
+          description: Service Unavailable
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Health Check
+      tags:
+      - System
+  /orders:
+    post:
+      consumes:
+      - application/json
+      description: Place an order and trigger transactional inventory deduction
+      parameters:
+      - description: Order Items Payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/order.CreateOrderInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/order.Order'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Create Order
+      tags:
+      - Orders
+  /orders/{id}:
+    get:
+      description: Retrieve order receipt details with item breakdowns
+      parameters:
+      - description: Order ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/order.Order'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get Order By ID
+      tags:
+      - Orders
+  /products:
+    get:
+      description: Search, filter by price range, and paginate product catalog
+      parameters:
+      - description: Search keyword across name and description
+        in: query
+        name: search
+        type: string
+      - description: Minimum price in cents
+        in: query
+        name: min_price
+        type: integer
+      - description: Maximum price in cents
+        in: query
+        name: max_price
+        type: integer
+      - description: Items per page (default 20, max 100)
+        in: query
+        name: limit
+        type: integer
+      - description: Pagination offset
+        in: query
+        name: offset
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/product.PaginatedProductsResponse'
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: List Products
+      tags:
+      - Products
+    post:
+      consumes:
+      - application/json
+      description: Add a new product to the catalog (Admin only)
+      parameters:
+      - description: Product Payload
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/product.CreateProductInput'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/product.Product'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create Product
+      tags:
+      - Products
+  /products/{id}:
+    delete:
+      description: Remove a product from the catalog (Admin only)
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      responses:
+        "204":
+          description: No Content
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Delete Product
+      tags:
+      - Products
+    get:
+      description: Fetch a single product record by ID
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/product.Product'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "404":
+          description: Not Found
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      summary: Get Product By ID
+      tags:
+      - Products
+    put:
+      consumes:
+      - application/json
+      description: Update details of an existing product (Admin only)
+      parameters:
+      - description: Product ID
+        in: path
+        name: id
+        required: true
+        type: integer
+      - description: Update Fields
+        in: body
+        name: payload
+        required: true
+        schema:
+          $ref: '#/definitions/product.UpdateProductInput'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              $ref: '#/definitions/product.Product'
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "401":
+          description: Unauthorized
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "403":
+          description: Forbidden
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            additionalProperties:
+              type: string
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update Product
+      tags:
+      - Products
 securityDefinitions:
   BearerAuth:
     description: Type "Bearer " followed by your JWT token.

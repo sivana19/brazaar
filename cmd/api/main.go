@@ -19,6 +19,7 @@ import (
 	"bazaar/internal/user"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	swaggerFiles "github.com/swaggo/files"
 	ginSwagger "github.com/swaggo/gin-swagger"
@@ -27,7 +28,7 @@ import (
 // @title           Bazaar E-Commerce REST API
 // @version         1.0
 // @description     Production-grade e-commerce backend built with Go, Gin, and Neon PostgreSQL.
-// @host            localhost:8000
+// @host            localhost:8080
 // @BasePath        /
 
 // @securityDefinitions.apikey BearerAuth
@@ -42,7 +43,7 @@ func main() {
 
 	port := os.Getenv("PORT")
 	if port == "" {
-		port = "8000"
+		port = "8080"
 	}
 
 	jwtSecret := os.Getenv("JWT_SECRET")
@@ -75,271 +76,32 @@ func main() {
 	// Swagger UI documentation endpoint
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
-	// @Summary      Health Check
-	// @Description  Verifies the API and underlying database connectivity
-	// @Tags         System
-	// @Produce      json
-	// @Success      200 {object} map[string]string
-	// @Failure      503 {object} map[string]string
-	// @Router       /health [get]
-	r.GET("/health", func(c *gin.Context) {
-		if err := dbPool.Ping(c.Request.Context()); err != nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "db": "down"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"status": "healthy", "db": "up"})
-	})
+	// System Routes
+	r.GET("/health", healthCheckHandler(dbPool))
 
-	// Public Auth endpoints
+	// Auth Routes
 	authGroup := r.Group("/auth")
 	{
-		// @Summary      Register User
-		// @Description  Register a new account
-		// @Tags         Auth
-		// @Accept       json
-		// @Produce      json
-		// @Param        payload body user.RegisterInput true "Registration Payload"
-		// @Success      201 {object} map[string]user.User
-		// @Failure      400 {object} map[string]string
-		// @Failure      500 {object} map[string]string
-		// @Router       /auth/register [post]
-		authGroup.POST("/register", func(c *gin.Context) {
-			var input user.RegisterInput
-			if err := c.ShouldBindJSON(&input); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-			u, err := userRepo.Register(c.Request.Context(), input)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(http.StatusCreated, gin.H{"user": u})
-		})
-
-		// @Summary      Login User
-		// @Description  Authenticate credentials and return a signed JWT token
-		// @Tags         Auth
-		// @Accept       json
-		// @Produce      json
-		// @Param        payload body user.LoginInput true "Login Credentials"
-		// @Success      200 {object} map[string]any
-		// @Failure      400 {object} map[string]string
-		// @Failure      401 {object} map[string]string
-		// @Failure      500 {object} map[string]string
-		// @Router       /auth/login [post]
-		authGroup.POST("/login", func(c *gin.Context) {
-			var input user.LoginInput
-			if err := c.ShouldBindJSON(&input); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-			token, u, err := userRepo.Login(c.Request.Context(), input)
-			if err != nil {
-				if errors.Is(err, user.ErrInvalidCredentials) {
-					c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
-					return
-				}
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{"token": token, "user": u})
-		})
+		authGroup.POST("/register", registerHandler(userRepo))
+		authGroup.POST("/login", loginHandler(userRepo))
 	}
 
-	// @Summary      List Products
-	// @Description  Search, filter by price range, and paginate product catalog
-	// @Tags         Products
-	// @Produce      json
-	// @Param        search query string false "Search query keyword"
-	// @Param        min_price query int false "Minimum price in cents"
-	// @Param        max_price query int false "Maximum price in cents"
-	// @Param        limit query int false "Items per page (default 20, max 100)"
-	// @Param        offset query int false "Pagination offset"
-	// @Success      200 {object} product.PaginatedProductsResponse
-	// @Failure      400 {object} map[string]string
-	// @Failure      500 {object} map[string]string
-	// @Router       /products [get]
-	r.GET("/products", func(c *gin.Context) {
-		var filter product.ListProductsFilter
-		if err := c.ShouldBindQuery(&filter); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid query parameters"})
-			return
-		}
+	// Product Routes (Public)
+	r.GET("/products", listProductsHandler(productRepo))
+	r.GET("/products/:id", getProductHandler(productRepo))
 
-		result, err := productRepo.List(c.Request.Context(), filter)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusOK, result)
-	})
-
-	// @Summary      Get Product By ID
-	// @Description  Fetch a single product record by its primary key
-	// @Tags         Products
-	// @Produce      json
-	// @Param        id path int true "Product ID"
-	// @Success      200 {object} map[string]product.Product
-	// @Failure      400 {object} map[string]string
-	// @Failure      404 {object} map[string]string
-	// @Router       /products/{id} [get]
-	r.GET("/products/:id", func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid product id"})
-			return
-		}
-		p, err := productRepo.GetByID(c.Request.Context(), id)
-		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"product": p})
-	})
-
-	// Protected Product modifications (Admin Only)
+	// Product Routes (Admin Only)
 	adminProducts := r.Group("/products")
 	adminProducts.Use(middleware.RequireAuth(jwtSecret), middleware.RequireRole("admin"))
 	{
-		// @Summary      Create Product
-		// @Description  Add a new product to the catalog (Admin only)
-		// @Tags         Products
-		// @Accept       json
-		// @Produce      json
-		// @Security     BearerAuth
-		// @Param        payload body product.CreateProductInput true "Product Payload"
-		// @Success      201 {object} map[string]product.Product
-		// @Failure      400 {object} map[string]string
-		// @Failure      401 {object} map[string]string
-		// @Failure      403 {object} map[string]string
-		// @Failure      500 {object} map[string]string
-		// @Router       /products [post]
-		adminProducts.POST("", func(c *gin.Context) {
-			var input product.CreateProductInput
-			if err := c.ShouldBindJSON(&input); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			if err := input.Validate(); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-
-			p, err := productRepo.Create(c.Request.Context(), input)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(http.StatusCreated, gin.H{"product": p})
-		})
-
-		// @Summary      Update Product
-		// @Description  Update details of an existing product (Admin only)
-		// @Tags         Products
-		// @Accept       json
-		// @Produce      json
-		// @Security     BearerAuth
-		// @Param        id path int true "Product ID"
-		// @Param        payload body product.UpdateProductInput true "Update Fields"
-		// @Success      200 {object} map[string]product.Product
-		// @Failure      400 {object} map[string]string
-		// @Failure      401 {object} map[string]string
-		// @Failure      403 {object} map[string]string
-		// @Failure      500 {object} map[string]string
-		// @Router       /products/{id} [put]
-		adminProducts.PUT("/:id", func(c *gin.Context) {
-			id, err := strconv.Atoi(c.Param("id"))
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid product id"})
-				return
-			}
-			var input product.UpdateProductInput
-			if err := c.ShouldBindJSON(&input); err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-				return
-			}
-			p, err := productRepo.Update(c.Request.Context(), id, input)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			c.JSON(http.StatusOK, gin.H{"product": p})
-		})
-
-		// @Summary      Delete Product
-		// @Description  Remove a product from the database (Admin only)
-		// @Tags         Products
-		// @Security     BearerAuth
-		// @Param        id path int true "Product ID"
-		// @Success      204 "No Content"
-		// @Failure      400 {object} map[string]string
-		// @Failure      401 {object} map[string]string
-		// @Failure      403 {object} map[string]string
-		// @Failure      500 {object} map[string]string
-		// @Router       /products/{id} [delete]
-		adminProducts.DELETE("/:id", func(c *gin.Context) {
-			id, err := strconv.Atoi(c.Param("id"))
-			if err != nil {
-				c.JSON(http.StatusBadRequest, gin.H{"error": "invalid product id"})
-				return
-			}
-			_, err = productRepo.Delete(c.Request.Context(), id)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			c.Status(http.StatusNoContent)
-		})
+		adminProducts.POST("", createProductHandler(productRepo))
+		adminProducts.PUT("/:id", updateProductHandler(productRepo))
+		adminProducts.DELETE("/:id", deleteProductHandler(productRepo))
 	}
 
-	// Order endpoints
-	// @Summary      Create Order
-	// @Description  Place an order and execute transactional inventory deduction
-	// @Tags         Orders
-	// @Accept       json
-	// @Produce      json
-	// @Param        payload body order.CreateOrderInput true "Order Items Payload"
-	// @Success      201 {object} map[string]order.Order
-	// @Failure      400 {object} map[string]string
-	// @Router       /orders [post]
-	r.POST("/orders", func(c *gin.Context) {
-		var input order.CreateOrderInput
-		if err := c.ShouldBindJSON(&input); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		ord, err := orderRepo.CreateOrder(c.Request.Context(), input)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-		c.JSON(http.StatusCreated, gin.H{"order": ord})
-	})
-
-	// @Summary      Get Order By ID
-	// @Description  Retrieve order receipt details with item breakdowns
-	// @Tags         Orders
-	// @Produce      json
-	// @Param        id path int true "Order ID"
-	// @Success      200 {object} map[string]order.Order
-	// @Failure      400 {object} map[string]string
-	// @Failure      404 {object} map[string]string
-	// @Router       /orders/{id} [get]
-	r.GET("/orders/:id", func(c *gin.Context) {
-		id, err := strconv.Atoi(c.Param("id"))
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order id"})
-			return
-		}
-		ord, err := orderRepo.GetByID(c.Request.Context(), id)
-		if err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
-			return
-		}
-		c.JSON(http.StatusOK, gin.H{"order": ord})
-	})
+	// Order Routes
+	r.POST("/orders", createOrderHandler(orderRepo))
+	r.GET("/orders/:id", getOrderHandler(orderRepo))
 
 	srv := &http.Server{
 		Addr:    ":" + port,
@@ -368,4 +130,280 @@ func main() {
 	}
 
 	slog.Info("server exited cleanly")
+}
+
+// @Summary      Health Check
+// @Description  Verifies API and database connectivity
+// @Tags         System
+// @Produce      json
+// @Success      200 {object} map[string]string
+// @Failure      503 {object} map[string]string
+// @Router       /health [get]
+func healthCheckHandler(dbPool *pgxpool.Pool) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := dbPool.Ping(c.Request.Context()); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"status": "unhealthy", "db": "down"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "healthy", "db": "up"})
+	}
+}
+
+// @Summary      Register User
+// @Description  Register a new customer account
+// @Tags         Auth
+// @Accept       json
+// @Produce      json
+// @Param        payload body user.RegisterInput true "Registration Payload"
+// @Success      201 {object} map[string]user.User
+// @Failure      400 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /auth/register [post]
+func registerHandler(repo *user.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var input user.RegisterInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		u, err := repo.Register(c.Request.Context(), input)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"user": u})
+	}
+}
+
+// @Summary      Login User
+// @Description  Authenticate user credentials and receive a JWT token
+// @Tags         Auth
+// @Accept       json
+// @Produce      json
+// @Param        payload body user.LoginInput true "Login Credentials"
+// @Success      200 {object} map[string]any
+// @Failure      400 {object} map[string]string
+// @Failure      401 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /auth/login [post]
+func loginHandler(repo *user.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var input user.LoginInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		token, u, err := repo.Login(c.Request.Context(), input)
+		if err != nil {
+			if errors.Is(err, user.ErrInvalidCredentials) {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid email or password"})
+				return
+			}
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"token": token, "user": u})
+	}
+}
+
+// @Summary      List Products
+// @Description  Search, filter by price range, and paginate product catalog
+// @Tags         Products
+// @Produce      json
+// @Param        search query string false "Search keyword across name and description"
+// @Param        min_price query int false "Minimum price in cents"
+// @Param        max_price query int false "Maximum price in cents"
+// @Param        limit query int false "Items per page (default 20, max 100)"
+// @Param        offset query int false "Pagination offset"
+// @Success      200 {object} product.PaginatedProductsResponse
+// @Failure      400 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /products [get]
+func listProductsHandler(repo *product.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var filter product.ListProductsFilter
+		if err := c.ShouldBindQuery(&filter); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid query parameters"})
+			return
+		}
+
+		result, err := repo.List(c.Request.Context(), filter)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, result)
+	}
+}
+
+// @Summary      Get Product By ID
+// @Description  Fetch a single product record by ID
+// @Tags         Products
+// @Produce      json
+// @Param        id path int true "Product ID"
+// @Success      200 {object} map[string]product.Product
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Router       /products/{id} [get]
+func getProductHandler(repo *product.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid product id"})
+			return
+		}
+		p, err := repo.GetByID(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "product not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"product": p})
+	}
+}
+
+// @Summary      Create Product
+// @Description  Add a new product to the catalog (Admin only)
+// @Tags         Products
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        payload body product.CreateProductInput true "Product Payload"
+// @Success      201 {object} map[string]product.Product
+// @Failure      400 {object} map[string]string
+// @Failure      401 {object} map[string]string
+// @Failure      403 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /products [post]
+func createProductHandler(repo *product.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var input product.CreateProductInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if err := input.Validate(); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		p, err := repo.Create(c.Request.Context(), input)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"product": p})
+	}
+}
+
+// @Summary      Update Product
+// @Description  Update details of an existing product (Admin only)
+// @Tags         Products
+// @Accept       json
+// @Produce      json
+// @Security     BearerAuth
+// @Param        id path int true "Product ID"
+// @Param        payload body product.UpdateProductInput true "Update Fields"
+// @Success      200 {object} map[string]product.Product
+// @Failure      400 {object} map[string]string
+// @Failure      401 {object} map[string]string
+// @Failure      403 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /products/{id} [put]
+func updateProductHandler(repo *product.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid product id"})
+			return
+		}
+		var input product.UpdateProductInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		p, err := repo.Update(c.Request.Context(), id, input)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"product": p})
+	}
+}
+
+// @Summary      Delete Product
+// @Description  Remove a product from the catalog (Admin only)
+// @Tags         Products
+// @Security     BearerAuth
+// @Param        id path int true "Product ID"
+// @Success      204 "No Content"
+// @Failure      400 {object} map[string]string
+// @Failure      401 {object} map[string]string
+// @Failure      403 {object} map[string]string
+// @Failure      500 {object} map[string]string
+// @Router       /products/{id} [delete]
+func deleteProductHandler(repo *product.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid product id"})
+			return
+		}
+		_, err = repo.Delete(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.Status(http.StatusNoContent)
+	}
+}
+
+// @Summary      Create Order
+// @Description  Place an order and trigger transactional inventory deduction
+// @Tags         Orders
+// @Accept       json
+// @Produce      json
+// @Param        payload body order.CreateOrderInput true "Order Items Payload"
+// @Success      201 {object} map[string]order.Order
+// @Failure      400 {object} map[string]string
+// @Router       /orders [post]
+func createOrderHandler(repo *order.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var input order.CreateOrderInput
+		if err := c.ShouldBindJSON(&input); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		ord, err := repo.CreateOrder(c.Request.Context(), input)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusCreated, gin.H{"order": ord})
+	}
+}
+
+// @Summary      Get Order By ID
+// @Description  Retrieve order receipt details with item breakdowns
+// @Tags         Orders
+// @Produce      json
+// @Param        id path int true "Order ID"
+// @Success      200 {object} map[string]order.Order
+// @Failure      400 {object} map[string]string
+// @Failure      404 {object} map[string]string
+// @Router       /orders/{id} [get]
+func getOrderHandler(repo *order.Repository) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		id, err := strconv.Atoi(c.Param("id"))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid order id"})
+			return
+		}
+		ord, err := repo.GetByID(c.Request.Context(), id)
+		if err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "order not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"order": ord})
+	}
 }
