@@ -9,7 +9,8 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-func RequireAuth(jwtSecret string) gin.HandlerFunc {
+// RequireAuth validates incoming JWT tokens and injects claims into Gin context.
+func RequireAuth(secret string) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
@@ -18,17 +19,18 @@ func RequireAuth(jwtSecret string) gin.HandlerFunc {
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || parts[0] != "Bearer" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization header must be in 'Bearer <token>' format"})
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization header format must be Bearer <token>"})
 			return
 		}
 
 		tokenString := parts[1]
+
 		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-			return []byte(jwtSecret), nil
+			return []byte(secret), nil
 		})
 
 		if err != nil || !token.Valid {
@@ -38,25 +40,35 @@ func RequireAuth(jwtSecret string) gin.HandlerFunc {
 
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token claims"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unable to parse token claims"})
 			return
 		}
 
-		c.Set("userID", claims["sub"])
-		c.Set("userEmail", claims["email"])
-		c.Set("userRole", claims["role"])
+		// Inject user identity across common claim keys
+		if sub, exists := claims["sub"]; exists {
+			c.Set("userID", sub)
+			c.Set("user_id", sub)
+		} else if id, exists := claims["id"]; exists {
+			c.Set("userID", id)
+			c.Set("user_id", id)
+		} else if uid, exists := claims["user_id"]; exists {
+			c.Set("userID", uid)
+			c.Set("user_id", uid)
+		}
+
+		if email, exists := claims["email"]; exists {
+			c.Set("userEmail", email)
+		}
+
+		if role, exists := claims["role"]; exists {
+			c.Set("userRole", role)
+		}
 
 		c.Next()
 	}
 }
 
-func RequireRole(requiredRole string) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		role, exists := c.Get("userRole")
-		if !exists || role != requiredRole {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "forbidden: insufficient permissions"})
-			return
-		}
-		c.Next()
-	}
+// AuthMiddleware is an alias for RequireAuth for backward compatibility.
+func AuthMiddleware(secret string) gin.HandlerFunc {
+	return RequireAuth(secret)
 }
