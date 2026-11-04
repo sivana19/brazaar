@@ -15,14 +15,9 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/orders": {
+        "/auth/login": {
             "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Create an order with inventory validation and concurrency row locking",
+                "description": "Authenticates credentials and returns a Bearer JWT",
                 "consumes": [
                     "application/json"
                 ],
@@ -30,17 +25,57 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "orders"
+                    "auth"
                 ],
-                "summary": "Create an order",
+                "summary": "Log in user",
                 "parameters": [
                     {
-                        "description": "Order Items",
-                        "name": "request",
+                        "description": "Login credentials",
+                        "name": "credentials",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/order.CreateOrderRequest"
+                            "$ref": "#/definitions/main.LoginRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.AuthResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/auth/register": {
+            "post": {
+                "description": "Creates a new customer account",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Register a new user",
+                "parameters": [
+                    {
+                        "description": "Registration data",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.RegisterRequest"
                         }
                     }
                 ],
@@ -55,46 +90,98 @@ const docTemplate = `{
                     "400": {
                         "description": "Bad Request",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/main.ErrorResponse"
                         }
                     },
-                    "401": {
-                        "description": "Unauthorized",
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/main.ErrorResponse"
                         }
                     }
                 }
             }
         },
-        "/orders/{id}": {
+        "/products": {
             "get": {
+                "description": "Retrieves all catalog items",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "products"
+                ],
+                "summary": "List all products",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/main.ProductResponse"
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get order details and items by order ID for the authenticated owner",
+                "description": "Adds a new item to catalog (requires authentication)",
+                "consumes": [
+                    "application/json"
+                ],
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "orders"
+                    "products"
                 ],
-                "summary": "Get order details",
+                "summary": "Create a product",
+                "parameters": [
+                    {
+                        "description": "Product attributes",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.ProductInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "$ref": "#/definitions/main.ProductResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/main.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/products/{id}": {
+            "get": {
+                "description": "Returns details and live inventory for a specific product",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "products"
+                ],
+                "summary": "Get product by ID",
                 "parameters": [
                     {
                         "type": "integer",
-                        "description": "Order ID",
+                        "description": "Product ID",
                         "name": "id",
                         "in": "path",
                         "required": true
@@ -104,84 +191,215 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/main.ProductResponse"
                         }
                     },
                     "404": {
                         "description": "Not Found",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": true
+                            "$ref": "#/definitions/main.ErrorResponse"
                         }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "products"
+                ],
+                "summary": "Update a product",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Product ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Updated product payload",
+                        "name": "payload",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/main.ProductInput"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/main.ProductResponse"
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "tags": [
+                    "products"
+                ],
+                "summary": "Delete a product",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "description": "Product ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
                     }
                 }
             }
         }
     },
     "definitions": {
-        "order.CreateOrderRequest": {
+        "main.AuthResponse": {
             "type": "object",
-            "required": [
-                "items"
-            ],
             "properties": {
-                "items": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/order.OrderItemRequest"
-                    }
+                "token": {
+                    "type": "string",
+                    "example": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
                 }
             }
         },
-        "order.OrderItemRequest": {
+        "main.ErrorResponse": {
             "type": "object",
-            "required": [
-                "product_id",
-                "quantity"
-            ],
             "properties": {
-                "product_id": {
-                    "type": "integer"
-                },
-                "quantity": {
-                    "type": "integer"
+                "error": {
+                    "type": "string",
+                    "example": "invalid request payload"
                 }
             }
-        }
-    },
-    "securityDefinitions": {
-        "BearerAuth": {
-            "description": "Type \"Bearer\" followed by a space and your JWT token.",
-            "type": "apiKey",
-            "name": "Authorization",
-            "in": "header"
+        },
+        "main.LoginRequest": {
+            "type": "object",
+            "required": [
+                "email",
+                "password"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "example": "tester@bazaar.local"
+                },
+                "password": {
+                    "type": "string",
+                    "example": "SecurePassword123!"
+                }
+            }
+        },
+        "main.ProductInput": {
+            "type": "object",
+            "required": [
+                "name",
+                "price_cents",
+                "stock"
+            ],
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "example": "Bluetooth 5.0, hot-swappable switches"
+                },
+                "name": {
+                    "type": "string",
+                    "example": "Wireless Mechanical Keyboard"
+                },
+                "price_cents": {
+                    "type": "integer",
+                    "example": 8500
+                },
+                "stock": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "example": 25
+                }
+            }
+        },
+        "main.ProductResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "description": {
+                    "type": "string",
+                    "example": "Bluetooth 5.0, hot-swappable switches"
+                },
+                "id": {
+                    "type": "integer",
+                    "example": 7
+                },
+                "name": {
+                    "type": "string",
+                    "example": "Wireless Mechanical Keyboard"
+                },
+                "price_cents": {
+                    "type": "integer",
+                    "example": 8500
+                },
+                "stock": {
+                    "type": "integer",
+                    "example": 25
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
+        "main.RegisterRequest": {
+            "type": "object",
+            "required": [
+                "email",
+                "full_name",
+                "password"
+            ],
+            "properties": {
+                "email": {
+                    "type": "string",
+                    "example": "user@bazaar.local"
+                },
+                "full_name": {
+                    "type": "string",
+                    "example": "Abebe Bikila"
+                },
+                "password": {
+                    "type": "string",
+                    "minLength": 8,
+                    "example": "SecurePassword123!"
+                }
+            }
         }
     }
 }`
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
-	Version:          "1.0",
-	Host:             "localhost:8080",
-	BasePath:         "/",
+	Version:          "",
+	Host:             "",
+	BasePath:         "",
 	Schemes:          []string{},
-	Title:            "Bazaar E-Commerce API",
-	Description:      "REST API for Bazaar e-commerce platform with Neon PostgreSQL, concurrency locks, and JWT auth.",
+	Title:            "",
+	Description:      "",
 	InfoInstanceName: "swagger",
 	SwaggerTemplate:  docTemplate,
 	LeftDelim:        "{{",
