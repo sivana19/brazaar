@@ -3,72 +3,64 @@ package middleware
 import (
 	"fmt"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// RequireAuth validates incoming JWT tokens and injects claims into Gin context.
-func RequireAuth(secret string) gin.HandlerFunc {
+func AuthMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		authHeader := c.GetHeader("Authorization")
 		if authHeader == "" {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization header is required"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization header is required"})
+			c.Abort()
 			return
 		}
 
 		parts := strings.SplitN(authHeader, " ", 2)
-		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authorization header format must be Bearer <token>"})
+		if len(parts) != 2 || strings.ToLower(parts[0]) != "bearer" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "authorization header format must be Bearer <token>"})
+			c.Abort()
 			return
 		}
 
 		tokenString := parts[1]
+		jwtSecret := os.Getenv("JWT_SECRET")
+		if jwtSecret == "" {
+			jwtSecret = "default-secret-key-change-in-production"
+		}
 
 		token, err := jwt.Parse(tokenString, func(t *jwt.Token) (interface{}, error) {
 			if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-			return []byte(secret), nil
+			return []byte(jwtSecret), nil
 		})
 
 		if err != nil || !token.Valid {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired token"})
+			c.Abort()
 			return
 		}
 
 		claims, ok := token.Claims.(jwt.MapClaims)
 		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unable to parse token claims"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token claims"})
+			c.Abort()
 			return
 		}
 
-		// Inject user identity across common claim keys
-		if sub, exists := claims["sub"]; exists {
-			c.Set("userID", sub)
-			c.Set("user_id", sub)
-		} else if id, exists := claims["id"]; exists {
-			c.Set("userID", id)
-			c.Set("user_id", id)
-		} else if uid, exists := claims["user_id"]; exists {
-			c.Set("userID", uid)
-			c.Set("user_id", uid)
+		// Support both "user_id" and JWT standard "sub"
+		userID := claims["user_id"]
+		if userID == nil {
+			userID = claims["sub"]
 		}
 
-		if email, exists := claims["email"]; exists {
-			c.Set("userEmail", email)
-		}
-
-		if role, exists := claims["role"]; exists {
-			c.Set("userRole", role)
-		}
+		c.Set("user_id", userID)
+		c.Set("email", claims["email"])
 
 		c.Next()
 	}
-}
-
-// AuthMiddleware is an alias for RequireAuth for backward compatibility.
-func AuthMiddleware(secret string) gin.HandlerFunc {
-	return RequireAuth(secret)
 }
