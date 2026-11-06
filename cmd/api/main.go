@@ -73,7 +73,7 @@ func main() {
     // Swagger documentation route
     r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
-    // User / Auth Handlers
+    // Auth routes
     userRepo := user.NewRepository(pool, jwtSecret)
     authRoutes := r.Group("/auth")
     {
@@ -109,7 +109,7 @@ func main() {
         })
     }
 
-    // Product Handlers
+    // Product routes
     productRepo := product.NewRepository(pool)
     productRoutes := r.Group("/products")
     {
@@ -206,7 +206,7 @@ func main() {
         })
     }
 
-    // Order Handlers
+    // Order routes
     orderHandler := order.NewHandler(pool)
     orderRoutes := r.Group("/orders")
     orderRoutes.Use(middleware.AuthMiddleware())
