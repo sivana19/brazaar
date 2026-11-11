@@ -3,14 +3,14 @@ FROM golang:1.23-alpine AS builder
 
 WORKDIR /app
 
-# Install git and ca-certificates in case private/nested modules are needed
+# Install git and ca-certificates
 RUN apk add --no-cache git ca-certificates
 
 # Cache dependencies
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy all source files
+# Copy source code
 COPY . .
 
 # Build the binary targeting cmd/api
@@ -23,10 +23,9 @@ RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy compiled binary from builder
+# Copy binary from builder stage
 COPY --from=builder /app/server /app/server
 
-# Expose server port
 EXPOSE 8080
 
 CMD ["/app/server"]
