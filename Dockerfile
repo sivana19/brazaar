@@ -1,9 +1,9 @@
 # Stage 1: Build the Go binary
-FROM golang:1.23-alpine AS builder
+FROM golang:alpine AS builder
 
 WORKDIR /app
 
-# Install git and ca-certificates
+# Install build dependencies
 RUN apk add --no-cache git ca-certificates
 
 # Cache dependencies
@@ -23,7 +23,6 @@ RUN apk --no-cache add ca-certificates tzdata
 
 WORKDIR /app
 
-# Copy binary from builder stage
 COPY --from=builder /app/server /app/server
 
 EXPOSE 8080
